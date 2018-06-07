@@ -27,6 +27,56 @@ class AccessToken
     public $uid;
 
     /**
+     * @var  string  tokenId
+     */
+    public $tokenid;
+
+    /**
+     * @var  string  iss
+     */
+    public $iss;
+
+    /**
+     * @var  string  sub
+     */
+    public $sub;
+
+    /**
+     * @var  string  aud
+     */
+    public $aud;
+
+    /**
+     * @var  string  nonce
+     */
+    public $nonce;
+
+    /**
+     * @var  string  exp
+     */
+    public $exp;
+
+    /**
+     * @var  string  iat
+     */
+    public $iat;
+
+    /**
+     * @var  string  auth_time
+     */
+    public $auth_time;
+
+    /**
+     * @var  string  acr
+     */
+    public $acr;
+    /**
+     * @var  string  azp
+     */
+    public $azp;
+
+
+    /**
      * Sets the token, expiry, etc values.
      *
      * @param  array $options token options
@@ -63,6 +113,10 @@ class AccessToken
             $expiresInFuture = $expires > time();
             $this->expires = $expiresInFuture ? $expires : time() + ((int) $expires);
         }
+
+        if(!empty($options['id_token'])){
+            $this->tokenid = $options['id_token'];
+        }
     }
 
     /**
@@ -73,5 +127,33 @@ class AccessToken
     public function __toString()
     {
         return (string) $this->accessToken;
+    }
+
+    /**
+     * Setting Calims
+     *
+     * @param  array $claims ID token claims
+     */
+     public function setClaims($claims = array())
+     {
+            $this->iss = isset($claims['iss']) ? $claims['iss'] : null;
+            $this->sub = isset($claims['sub']) ? $claims['sub'] : null;
+            $this->aud = isset($claims['aud']) ? $claims['aud'] : null;
+            $this->nonce = isset($claims['nonce']) ? $claims['nonce'] : null;
+            $this->exp = isset($claims['exp']) ? $claims['exp'] : null;
+            $this->iat = isset($claims['iat']) ? $claims['iat'] : null;
+            $this->auth_time = isset($claims['auth_time']) ? $claims['auth_time'] : null;
+            $this->acr = isset($claims['acr']) ? $claims['acr'] : null;
+            $this->azp = isset($claims['azp']) ? $claims['azp'] : null;
+     }
+
+    /**
+     * Returns the token key.
+     *
+     * @return string
+     */
+    public function getSub()
+    {
+        return $this->sub;
     }
 }

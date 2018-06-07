@@ -8,6 +8,14 @@ use Guzzle\Service\Client as GuzzleClient;
 use League\OAuth2\Client\Exception\IDPException as IDPException;
 use League\OAuth2\Client\Grant\GrantInterface;
 use League\OAuth2\Client\Token\AccessToken as AccessToken;
+use League\OAuth2\Client\Exception\RPException;
+use JOSE_JWE;
+use Jose\Factory\LoaderFactory;
+use Jose\Factory\DecrypterFactory;
+use Jose\Object\JWEInterface;
+use Jose\Object\JWK;
+use Jose\Object\JWKSet;
+use Base64Url\Base64Url;
 
 abstract class AbstractProvider implements ProviderInterface
 {
@@ -18,6 +26,8 @@ abstract class AbstractProvider implements ProviderInterface
     public $redirectUri = '';
 
     public $state;
+
+    public $nonce;
 
     public $name;
 
@@ -35,6 +45,12 @@ abstract class AbstractProvider implements ProviderInterface
 
     public $authorizationHeader;
 
+    public $auth_uri = '';
+
+    public $token_uri = '';
+
+    public $info_uri = '';
+
     /**
      * @var GuzzleClient
      */
@@ -46,16 +62,21 @@ abstract class AbstractProvider implements ProviderInterface
      * @var int This represents: PHP_QUERY_RFC1738, which is the default value for php 5.4
      *          and the default encoding type for the http_build_query setup
      */
-    protected $httpBuildEncType = 1;
+    protected $httpBuildEncType = PHP_QUERY_RFC3986;
 
     public function __construct($options = [])
     {
+    	$target = "scopes";
         foreach ($options as $option => $value) {
             if (property_exists($this, $option)) {
-                $this->{$option} = $value;
+                if(strcmp($option,$target) === 0){
+                    $scope_array = explode(",", $value);
+                    $this->{$option} = $scope_array;
+                } else {
+                    $this->{$option} = $value;
+                }
             }
         }
-
         $this->setHttpClient(new GuzzleClient());
     }
 
@@ -165,9 +186,11 @@ abstract class AbstractProvider implements ProviderInterface
             throw new \InvalidArgumentException($message);
         }
 
+        if (isset ( $_SESSION ['redirectUri'] )) {
+            $this->redirectUri = $_SESSION ['redirectUri'];
+        }
+
         $defaultParams = [
-            'client_id'     => $this->clientId,
-            'client_secret' => $this->clientSecret,
             'redirect_uri'  => $this->redirectUri,
             'grant_type'    => $grant,
         ];
@@ -181,38 +204,182 @@ abstract class AbstractProvider implements ProviderInterface
                     // No providers included with this library use get but 3rd parties may
                     $client = $this->getHttpClient();
                     $client->setBaseUrl($this->urlAccessToken() . '?' . $this->httpBuildQuery($requestParams, '', '&'));
-                    $request = $client->get(null, $this->getHeaders(), $requestParams)->send();
-                    $response = $request->getBody();
+                    $response = $client->get(null, $this->getHeaders(base64_encode($this->clientId.':'.$this->clientSecret)), $requestParams)->send();
                     break;
                     // @codeCoverageIgnoreEnd
                 case 'POST':
                     $client = $this->getHttpClient();
                     $client->setBaseUrl($this->urlAccessToken());
-                    $request = $client->post(null, $this->getHeaders(), $requestParams)->send();
-                    $response = $request->getBody();
+                    $response = $client->post(null, $this->getHeaders(base64_encode($this->clientId.':'.$this->clientSecret)), $requestParams)->send();
                     break;
                 // @codeCoverageIgnoreStart
                 default:
                     throw new \InvalidArgumentException('Neither GET nor POST is specified for request');
                 // @codeCoverageIgnoreEnd
             }
+
         } catch (BadResponseException $e) {
             // @codeCoverageIgnoreStart
-            $response = $e->getResponse()->getBody();
+            $response = $e->getResponse();
             // @codeCoverageIgnoreEnd
+        } catch (Exception $e) {
+            throw $e;
         }
 
+        if($response->getStatusCode() !== null && $response->getStatusCode() !==200){
+            $header = $response->getHeader("WWW-Authenticate");
+            if(!empty($header)){
+                preg_match('/error="(\w+)"/', $header, $match);
+                $error_response = $this->prepareErrorResponse(json_encode(array('error'=>$match[1])));
+            } else {
+                $error_response = $this->prepareErrorResponse($response->getBody());
+            }
+            throw new RPException($error_response['message'], $error_response['code'], $response->getStatusCode());
+        }
         $result = $this->prepareResponse($response);
-
-        if (isset($result['error']) && ! empty($result['error'])) {
-            // @codeCoverageIgnoreStart
-            throw new IDPException($result);
-            // @codeCoverageIgnoreEnd
-        }
-
         $result = $this->prepareAccessTokenResult($result);
 
-        return $grant->handleResponse($result);
+        // for JWE token
+        try {
+            $accesstoken = $grant->handleResponse($result);
+            $jwe = JOSE_JWE::decode($accesstoken->tokenid);
+            if(isset($jwe->header['enc'])){
+                $shared_key = new JWK([
+                    'kty' => 'oct',
+                    'k' => Base64Url::encode(hash("sha256",$this->clientSecret,true)),
+                ]);
+
+                $keyset = new JWKSet();
+                $keyset = $keyset->addKey($shared_key);
+
+                $loader = LoaderFactory::createLoader();
+
+                $decrypter = DecrypterFactory::createDecrypter(
+                    [
+                        'A256KW',
+                        'A256CBC-HS512',
+                    ]
+                );
+
+                $jwe = $loader->load($accesstoken->tokenid);
+
+                $is_decrypted = $decrypter->decrypt($jwe, $keyset);
+
+                $jwt = JOSE_JWE::decode($jwe->getPayload());
+                $json = $jwt->claims;
+            }else{
+                $json = $jwe->claims;
+            }
+            $accesstoken->setClaims($json);
+
+            return $accesstoken;
+        } catch (RPException $e) {
+            throw $e;
+        } catch (Exception $e) {
+            throw new RPException($e->__toString, 'E0900');
+        }
+    }
+
+    public function refleshToken($grant = 'refresh_token', $params = [])
+    {
+        if (is_string($grant)) {
+            // PascalCase the grant. E.g: 'authorization_code' becomes 'AuthorizationCode'
+            $className = str_replace(' ', '', ucwords(str_replace(['-', '_'], ' ', $grant)));
+            $grant = 'League\\OAuth2\\Client\\Grant\\'.$className;
+            if (! class_exists($grant)) {
+                throw new \InvalidArgumentException('Unknown grant "'.$grant.'"');
+            }
+            $grant = new $grant();
+        } elseif (! $grant instanceof GrantInterface) {
+            $message = get_class($grant).' is not an instance of League\OAuth2\Client\Grant\GrantInterface';
+            throw new \InvalidArgumentException($message);
+        }
+        
+        if (isset ( $_SESSION ['redirectUri'] )) {
+            $this->redirectUri = $_SESSION ['redirectUri'];
+        }
+
+        $defaultParams = [
+        'redirect_uri'  => $this->redirectUri,
+        'grant_type'    => $grant,
+        ];
+
+        $requestParams = $grant->prepRequestParams($defaultParams, $params);
+
+        try {
+            switch (strtoupper($this->method)) {
+                case 'GET':
+                    // @codeCoverageIgnoreStart
+                    // No providers included with this library use get but 3rd parties may
+                    $client = $this->getHttpClient();
+                    $client->setBaseUrl($this->urlAccessToken() . '?' . $this->httpBuildQuery($requestParams, '', '&'));
+                    $response = $client->get(null, $this->getHeaders(base64_encode($this->clientId.':'.$this->clientSecret)), $requestParams)->send();
+                    break;
+                    // @codeCoverageIgnoreEnd
+                case 'POST':
+                    $client = $this->getHttpClient();
+                    $client->setBaseUrl($this->urlAccessToken());
+                    $response = $client->post(null, $this->getHeaders(base64_encode($this->clientId.':'.$this->clientSecret)), $requestParams)->send();
+                    break;
+                    // @codeCoverageIgnoreStart
+                default:
+                    throw new \InvalidArgumentException('Neither GET nor POST is specified for request');
+                    // @codeCoverageIgnoreEnd
+            }
+        } catch (BadResponseException $e) {
+            // @codeCoverageIgnoreStart
+            $response = $e->getResponse();
+            // @codeCoverageIgnoreEnd
+        } catch (\Exception $e) {
+            throw $e;
+        }
+        if($response->getStatusCode() !== null && $response->getStatusCode() !==200){
+            $header = $response->getHeader("WWW-Authenticate");
+            if(!empty($header)){
+                preg_match('/error="(\w+)"/', $header, $match);
+                $error_response = $this->prepareErrorResponse(json_encode(array('error'=>$match[1])));
+            } else {
+                $error_response = $this->prepareErrorResponse($response->getBody());
+            }
+            throw new RPException($error_response['message'], $error_response['code'], $response->getStatusCode());
+        }
+        $result = $this->prepareResponse($response);
+        $result = $this->prepareAccessTokenResult($result);
+
+        // for JWE token
+        $accesstoken = $grant->handleResponse($result);
+        if(!is_null($accesstoken->tokenid)){
+            $jwe = JOSE_JWE::decode($accesstoken->tokenid);
+            if(!isset($jwe->header['enc'])){
+                $json = $jwe->claims;
+            }else{
+                $shared_key = new JWK([
+                    'kty' => 'oct',
+                    'k' => Base64Url::encode(hash("sha256",$this->clientSecret,true)),
+                ]);
+
+                $keyset = new JWKSet();
+                $keyset = $keyset->addKey($shared_key);
+
+                $loader = LoaderFactory::createLoader();
+
+                $decrypter = DecrypterFactory::createDecrypter(
+                    [
+                        'A256KW',
+                        'A256CBC-HS512',
+                    ]
+                );
+                $jwe = $loader->load($accesstoken->tokenid);
+
+                $is_decrypted = $decrypter->decrypt($jwe, $keyset);
+
+                $jwt = JOSE_JWE::decode($jwe->getPayload());
+                $json = $jwt->claims;
+
+            }
+            $accesstoken->setClaims($json);
+        }
+        return $accesstoken;
     }
 
     /**
@@ -224,23 +391,58 @@ abstract class AbstractProvider implements ProviderInterface
      */
     protected function prepareResponse($response)
     {
-        $result = [];
+        $contentType = explode(';', $response->getContentType());
 
-        switch ($this->responseType) {
-            case 'json':
-                $json = json_decode($response, true);
+        try {
+            $result = [];
 
-                if (JSON_ERROR_NONE === json_last_error()) {
-                    $result = $json;
-                }
+            switch ($contentType[0]) {
+                case 'application/json':
+                    $json = json_decode($response->getBody(), true);
 
-                break;
-            case 'string':
-                parse_str($response, $result);
-                break;
+                    if (JSON_ERROR_NONE === json_last_error()) {
+                        $result = $json;
+                    }
+                    break;
+                case 'application/jwt':
+                    $jwe = JOSE_JWE::decode($response->getBody());
+                    if(isset($jwe->header['enc'])){
+                        $shared_key = new JWK([
+                            'kty' => 'oct',
+                            'k' => Base64Url::encode(hash("sha256",$this->clientSecret,true)),
+                        ]);
+
+                        $keyset = new JWKSet();
+                        $keyset = $keyset->addKey($shared_key);
+
+                        $loader = LoaderFactory::createLoader();
+
+                        $decrypter = DecrypterFactory::createDecrypter(
+                            [
+                                'A256KW',
+                                'A256CBC-HS512',
+                            ]
+                        );
+                        $jwe = $loader->load((string)$jwe->raw);
+
+                        $is_decrypted = $decrypter->decrypt($jwe, $keyset);
+
+                        $jwt = JOSE_JWE::decode($jwe->getPayload());
+                        $result = $jwt->claims;
+                    }else{
+                        $result = $jwe->claims;
+                    }
+                    break;
+                default:
+                    parse_str($response->getBody(), $result);
+                    break;
+            }
+            return $result;
+        } catch (DomainException $e){
+            throw new RPException('The signature is invalid', 'E0200');
+        } catch (\Exception $e){
+            throw $e;
         }
-
-        return $result;
     }
 
     /**
@@ -254,6 +456,46 @@ abstract class AbstractProvider implements ProviderInterface
     {
         $this->setResultUid($result);
         return $result;
+    }
+
+    protected function prepareErrorResponse ($response){
+        $json = json_decode($response, true);
+        $error_message = $json['error'];
+        $error_code;
+        switch($error_message){
+            case 'invalid_request':
+                $error_code = 'E0300';
+                break;
+            case 'invalid_scope':
+                $error_code = 'E0305';
+                break;
+            case 'server_error':
+                $error_code = 'E0306';
+                break;
+            case 'invalid_client':
+                $error_code = 'E0310';
+                break;
+            case 'invalid_grant':
+                $error_code = 'E0311';
+                break;
+            case 'unauthorized_client':
+                $error_code = 'E0312';
+                break;
+            case 'unsupported_grant_type':
+                $error_code = 'E0313';
+                break;
+            case 'invalid_token':
+                $error_code = 'E0314';
+                break;
+            case 'insufficient_scope':
+                $error_code = 'E0315';
+                break;
+            default:
+                $error_message = empty($error_message) ? 'The unexpected error was detected' : $error_message;
+                $error_code = 'E0900';
+                break;
+        }
+        return array('code' => $error_code,'message' =>$error_message);
     }
 
     /**
@@ -277,8 +519,7 @@ abstract class AbstractProvider implements ProviderInterface
     public function getUserDetails(AccessToken $token)
     {
         $response = $this->fetchUserDetails($token);
-
-        return $this->userDetails(json_decode($response), $token);
+        return $this->userDetails($response, $token);
     }
 
     public function getUserUid(AccessToken $token)
@@ -361,17 +602,26 @@ abstract class AbstractProvider implements ProviderInterface
                 $client->setDefaultOption('headers', $headers);
             }
 
-            $request = $client->get()->send();
-            $response = $request->getBody();
+            $response = $client->get()->send();
         } catch (BadResponseException $e) {
             // @codeCoverageIgnoreStart
-            $response = $e->getResponse()->getBody();
-            $result = $this->prepareResponse($response);
-            throw new IDPException($result);
+            $response = $e->getResponse();
             // @codeCoverageIgnoreEnd
         }
 
-        return $response;
+        if($response->getStatusCode() !== null && $response->getStatusCode() !==200){
+            $header = $response->getHeader("WWW-Authenticate");
+            if(!empty($header)){
+                preg_match('/error="(\w+)"/', $header, $match);
+                $error_response = $this->prepareErrorResponse(json_encode(array('error'=>$match[1])));
+            } else {
+                $error_response = $this->prepareErrorResponse($response->getBody());
+            }
+            throw new RPException($error_response['message'], $error_response['code'], $response->getStatusCode());
+        }
+        $result = $this->prepareResponse($response);
+
+        return $result;
     }
 
     protected function getAuthorizationHeaders($token)
@@ -383,7 +633,7 @@ abstract class AbstractProvider implements ProviderInterface
         return $headers;
     }
 
-    public function getHeaders($token = null)
+    public function getHeaders($token)
     {
         $headers = $this->headers;
         if ($token) {
@@ -395,5 +645,10 @@ abstract class AbstractProvider implements ProviderInterface
     public function setRedirectHandler(Closure $handler)
     {
         $this->redirectHandler = $handler;
+    }
+
+    public function  setAuthorizationHeader($header)
+    {
+        $this->authorizationHeader = $header;
     }
 }
