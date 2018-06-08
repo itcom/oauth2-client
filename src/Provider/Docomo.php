@@ -191,7 +191,8 @@ class Docomo extends AbstractProvider
                 $params['authiden'] = isset($options['authiden']) ? $options['authiden'] : $this->authiden;
             }
             if($this->debug){
-                error_log("\n" . date('r') . " " . var_export($params,true) . "\n",3,$this->debug_path);
+                \Log::debug(var_export($params,true));
+                //error_log("\n" . date('r') . " " . var_export($params,true) . "\n",3,$this->debug_path);
             }
             return $this->urlAuthorize().'?'.$this->httpBuildQuery($params, '', '&');
         } catch (Exception $e){
@@ -268,13 +269,15 @@ class Docomo extends AbstractProvider
         try{
             parent::setAuthorizationHeader('Basic');
             if($this->debug){
-                error_log("\n" . date('r') . " " . var_export($params,true) ."\n",3,$this->debug_path);
+                \Log::debug(var_export($params,true));
+                //error_log("\n" . date('r') . " " . var_export($params,true) ."\n",3,$this->debug_path);
             }
 
             $response = parent::getAccessToken($grant,$params);
 
             if($this->debug){
-                error_log("\n" . date('r') . " " . var_export($response,true) ."\n",3,$this->debug_path);
+                \Log::debug(var_export($response,true));
+                //error_log("\n" . date('r') . " " . var_export($response,true) ."\n",3,$this->debug_path);
             }
 
             return $response;
@@ -293,13 +296,15 @@ class Docomo extends AbstractProvider
             parent::setAuthorizationHeader('Bearer');
 
             if($this->debug){
-                error_log("\n" . date('r') . " " . var_export($token,true) ."\n",3,$this->debug_path);
+                \Log::debug(var_export($token,true));
+                //error_log("\n" . date('r') . " " . var_export($token,true) ."\n",3,$this->debug_path);
             }
 
             $response = parent::getUserDetails($token);
 
             if($this->debug){
-                error_log("\n" . date('r') . " " . var_export($response,true) ."\n",3,$this->debug_path);
+                \Log::debug(var_export($response,true));
+                //error_log("\n" . date('r') . " " . var_export($response,true) ."\n",3,$this->debug_path);
             }
 
             return $response;
@@ -318,13 +323,15 @@ class Docomo extends AbstractProvider
             parent::setAuthorizationHeader('Basic');
 
             if($this->debug){
-                error_log("\n" . date('r') . " " . var_export($params,true) ."\n",3,$this->debug_path);
+                \Log::debug(var_export($params,true));
+                //error_log("\n" . date('r') . " " . var_export($params,true) ."\n",3,$this->debug_path);
             }
 
             $response = parent::refleshToken($grant,$params);
 
             if($this->debug){
-                error_log("\n" . date('r') . " " . var_export($response,true) ."\n",3,$this->debug_path);
+                \Log::debug(var_export($response,true));
+                //error_log("\n" . date('r') . " " . var_export($response,true) ."\n",3,$this->debug_path);
             }
 
             return $response;

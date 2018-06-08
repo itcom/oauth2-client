@@ -14,12 +14,15 @@ class RPException extends \Exception
         $this->error_code = $code;
         $this->status_code = $status;
 
+        \Log::error(print_r(debug_backtrace(),TRUE));
+        /*
         if(($file = getenv('X-RP-BACKTRACE'))){
             $fp = fopen($file, 'a+');
             fwrite($fp, "\n[".date(DATE_RFC2822)."]\n");
-            fwrite($fp, var_export(debug_backtrace(),TRUE));
+            fwrite($fp, print_r(debug_backtrace(),TRUE));
             fclose($fp);
         }
+         */
     }
 
     // オブジェクトの文字列表現を独自に定義する
