@@ -23,6 +23,7 @@ class User
     protected $phone_number;
     protected $phone_number_verified;
     protected $address;
+    protected $aspuser;
     protected $updated_at;
 
     public function __get($name)
@@ -79,6 +80,7 @@ class User
             'phone_number' => $this->phone_number,
             'phone_number_verified' => $this->phone_number_verified,
             'address' => $this->address,
+            'aspuser' => $this->aspuser,
             'updated_at' => $this->updated_at,
         ];
     }
@@ -144,6 +146,9 @@ class User
                     break;
                 case 'address':
                     $this->address = $value;
+                    break;
+                case 'aspuser':
+                    $this->aspuser = $value;
                     break;
                 case 'updated_at':
                     $this->updated_at = $value;
