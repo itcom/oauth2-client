@@ -110,6 +110,15 @@ class Docomo extends AbstractProvider
 
                parent::__construct($options);
 
+               // SSL CA証明書バンドルの設定（cURLオプションを直接指定）
+               $ca_bundle = '/etc/pki/tls/certs/ca-bundle.crt';
+               if(isset($api['ssl_cainfo']) && file_exists($api['ssl_cainfo'])){
+                   $ca_bundle = $api['ssl_cainfo'];
+               }
+               if(file_exists($ca_bundle)){
+                   $this->httpClient->setSslVerification($ca_bundle, true, 2);
+               }
+
                if($proxy['proxy']){
                    if(isset($proxy['protocol']) && !is_null($proxy['protocol'])){
                        if(isset($proxy['userid']) && !is_null($proxy['userid'])){
